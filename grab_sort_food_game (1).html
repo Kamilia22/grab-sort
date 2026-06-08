@@ -1,0 +1,636 @@
+<!doctype html>
+<html lang="en" class="h-full">
+ <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Grab &amp; Sort Food Game</title>
+  
+  <!-- Safe Element SDK Handling (Google Sites Sandbox Shield) -->
+  <script>
+    window.elementSdk = window.elementSdk || {
+      init: function(opts) {
+        if(opts && opts.onConfigChange) {
+          opts.onConfigChange(opts.defaultConfig);
+        }
+      },
+      setConfig: function() {},
+      mapToCapabilities: function() { return { recolorables: [], borderables: [] }; },
+      mapToEditPanelValues: function() { return new Map(); }
+    };
+  </script>
+
+  <!-- External Stylesheets and Libraries -->
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.min.js" crossorigin="anonymous"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;600;700&amp;display=swap" rel="stylesheet">
+  
+  <style>
+    * { font-family: 'Fredoka', sans-serif; }
+    html, body { height: 100%; margin: 0; overflow: hidden; }
+    
+    .shake { animation: shake 0.3s ease-in-out; }
+    @keyframes shake {
+      0%, 100% { transform: translateX(0); }
+      25% { transform: translateX(-8px); }
+      75% { transform: translateX(8px); }
+    }
+    
+    @keyframes bounce-in {
+      0% { transform: scale(0); }
+      50% { transform: scale(1.2); }
+      100% { transform: scale(1); }
+    }
+    .bounce-in { animation: bounce-in 0.4s ease-out; }
+    
+    @keyframes pulse-glow {
+      0%, 100% { box-shadow: 0 0 10px rgba(255,200,0,0.3); }
+      50% { box-shadow: 0 0 25px rgba(255,200,0,0.8); }
+    }
+    .cart-glow { animation: pulse-glow 1.5s infinite; }
+    .grabbed { transform: scale(1.3); filter: brightness(1.3); }
+    
+    #video-feed { 
+      position: absolute; 
+      top: 10px; 
+      right: 10px; 
+      width: 140px; 
+      height: 105px; 
+      border-radius: 12px; 
+      border: 3px solid #fff; 
+      z-index: 50; 
+      transform: scaleX(-1); 
+      background: #000;
+    }
+    
+    .food-item { 
+      position: absolute; 
+      font-size: 44px; 
+      cursor: grab; 
+      transition: transform 0.1s; 
+      user-select: none; 
+      z-index: 20; 
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    .food-item:active { cursor: grabbing; }
+    
+    .cart { 
+      position: absolute; 
+      bottom: 20px; 
+      width: 44%; 
+      height: 140px; 
+      border-radius: 24px; 
+      display: flex; 
+      flex-direction: column; 
+      align-items: center; 
+      justify-content: center; 
+      z-index: 10; 
+      border: 4px dashed; 
+      transition: all 0.2s; 
+    }
+    .cart-left { left: 4%; border-color: #22c55e; background: rgba(34,197,94,0.15); }
+    .cart-right { right: 4%; border-color: #f59e0b; background: rgba(245,158,11,0.15); }
+    .cart.highlight { transform: scale(1.06); border-style: solid; background: rgba(168, 85, 247, 0.25); }
+    
+    .hand-cursor { 
+      position: absolute; 
+      width: 40px; 
+      height: 40px; 
+      border-radius: 50%; 
+      border: 3px solid #fff; 
+      pointer-events: none; 
+      z-index: 100; 
+      transition: transform 0.05s linear; 
+    }
+    .hand-open { background: rgba(99,255,132,0.4); }
+    .hand-closed { background: rgba(255,99,99,0.6); transform: scale(0.7); }
+    
+    .overlay { 
+      position: absolute; 
+      inset: 0; 
+      display: flex; 
+      align-items: center; 
+      justify-content: center; 
+      z-index: 200; 
+      background: rgba(15, 23, 42, 0.85); 
+      backdrop-filter: blur(4px);
+    }
+    
+    .score-pop { 
+      position: absolute; 
+      font-size: 28px; 
+      font-weight: 700; 
+      z-index: 90; 
+      pointer-events: none; 
+      animation: float-up 1s forwards; 
+    }
+    @keyframes float-up {
+      0% { opacity: 1; transform: translateY(0) scale(1); }
+      100% { opacity: 0; transform: translateY(-70px) scale(1.4); }
+    }
+    
+    .red-flash { position: absolute; inset: 0; background: rgba(239,68,68,0.35); z-index: 150; pointer-events: none; animation: flash-out 0.3s forwards; }
+    @keyframes flash-out {
+      0% { opacity: 1; }
+      100% { opacity: 0; }
+    }
+  </style>
+ </head>
+ 
+ <body class="h-full bg-gradient-to-b from-sky-300 via-sky-100 to-emerald-100 relative overflow-hidden">
+  
+  <!-- Hand cursor (For Webcam mode & Mouse feedback) -->
+  <div id="hand-cursor" class="hand-cursor hand-open" style="display:none;"></div>
+  
+  <!-- Video feed -->
+  <video id="video-feed" autoplay playsinline muted style="display:none;"></video>
+  
+  <!-- HUD Panel -->
+  <div id="hud" class="absolute top-3 left-3 z-50 flex gap-4 items-center">
+   <div class="bg-white/95 rounded-xl px-4 py-2 shadow-lg border border-white/20"><span class="text-xs text-gray-500 block">Score</span>
+    <div id="score-display" class="text-2xl font-bold text-emerald-600">0</div>
+   </div>
+   <div class="bg-white/95 rounded-xl px-4 py-2 shadow-lg border border-white/20"><span class="text-xs text-gray-500 block">Time</span>
+    <div id="timer-display" class="text-2xl font-bold text-orange-500">60</div>
+   </div>
+  </div>
+  
+  <!-- Title display banner -->
+  <div id="game-title" class="absolute top-3 left-1/2 -translate-x-1/2 z-40 bg-white/95 rounded-xl px-6 py-2 shadow-lg border border-white/20">
+   <h1 class="text-lg md:text-xl font-bold text-purple-600">🍎 Grab &amp; Sort! 🧀</h1>
+  </div>
+  
+  <!-- Carts (Drop Targets) -->
+  <div id="cart-left" class="cart cart-left cart-glow">
+   <span class="text-4xl">🛒</span> 
+   <span class="font-bold text-green-700 text-sm mt-1">I CAN COUNT</span> 
+   <span class="text-xs text-green-600">(Countable)</span>
+  </div>
+  <div id="cart-right" class="cart cart-right cart-glow">
+   <span class="text-4xl">🛒</span> 
+   <span class="font-bold text-amber-700 text-sm mt-1">I CAN'T COUNT</span> 
+   <span class="text-xs text-amber-600">(Uncountable)</span>
+  </div>
+  
+  <!-- Dynamic containers -->
+  <div id="food-container" class="absolute inset-0 z-20"></div>
+  <div id="pops-container" class="absolute inset-0 pointer-events-none z-90"></div>
+  <div id="red-flash" class="red-flash" style="display:none;"></div>
+  
+  <!-- Start overlay with dual control methods -->
+  <div id="start-overlay" class="overlay">
+   <div class="bg-white rounded-3xl p-6 md:p-8 max-w-md w-11/12 text-center shadow-2xl bounce-in">
+    <h2 class="text-3xl font-bold text-purple-600 mb-2">🍎 Grab &amp; Sort! 🧀</h2>
+    <p class="text-gray-600 text-sm mb-4">Sort yummy foods into the correct cart!</p>
+    
+    <div class="bg-yellow-50 rounded-2xl p-4 mb-6 text-xs text-left text-yellow-900 border border-yellow-200">
+     <p class="font-bold text-yellow-800 text-sm mb-1 flex items-center gap-1">🎮 How to Play:</p>
+     <p class="mb-1"><strong>🖐️ Mouse/Touch Mode:</strong> Simply tap & drag foods to the carts.</p>
+     <p><strong>📷 Webcam Mode:</strong> Move your hand to aim, close your fist (genggam) to grab, and release to drop!</p>
+    </div>
+    
+    <div class="flex flex-col gap-3">
+     <button id="start-mouse-btn" class="bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-bold text-md py-3 px-6 rounded-2xl hover:scale-105 active:scale-95 transition shadow-lg flex items-center justify-center gap-2">
+       🖱️ Play with Mouse / Touch
+     </button>
+     <div class="text-xs text-gray-400 font-bold">OR</div>
+     <button id="start-webcam-btn" class="bg-gradient-to-r from-purple-500 to-pink-500 text-white font-bold text-md py-3 px-6 rounded-2xl hover:scale-105 active:scale-95 transition shadow-lg flex items-center justify-center gap-2">
+       📷 Play with Webcam (Gestures)
+     </button>
+    </div>
+   </div>
+  </div>
+  
+  <!-- End overlay -->
+  <div id="end-overlay" class="overlay" style="display:none;">
+   <div class="bg-white rounded-3xl p-8 max-w-md w-11/12 text-center shadow-2xl bounce-in">
+    <h2 class="text-3xl font-bold text-amber-500 mb-2">⏰ Time's Up!</h2>
+    <div class="text-6xl font-bold text-purple-600 my-4 animate-bounce" id="final-score">0</div>
+    <p class="text-gray-500 text-xs mb-1 uppercase tracking-widest">Points Scored</p>
+    <div id="result-msg" class="text-lg font-bold mb-6"></div>
+    <button id="restart-btn" class="bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-bold text-lg px-8 py-3 rounded-full hover:scale-105 transition-transform shadow-lg"> 🔄 Play Again </button>
+   </div>
+  </div>
+
+  <script>
+    class WebAudioSynth {
+      constructor() {
+        this.ctx = null;
+      }
+      init() {
+        if (!this.ctx) {
+          this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+      }
+      playCorrect() {
+        this.init();
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        
+        const now = this.ctx.currentTime;
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(300, now);
+        osc.frequency.exponentialRampToValueAtTime(800, now + 0.15);
+        gain.gain.setValueAtTime(0.15, now);
+        gain.gain.linearRampToValueAtTime(0.01, now + 0.25);
+        
+        osc.start(now);
+        osc.stop(now + 0.25);
+      }
+      playWrong() {
+        this.init();
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        
+        const now = this.ctx.currentTime;
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(160, now);
+        osc.frequency.linearRampToValueAtTime(100, now + 0.2);
+        gain.gain.setValueAtTime(0.15, now);
+        gain.gain.linearRampToValueAtTime(0.01, now + 0.3);
+        
+        osc.start(now);
+        osc.stop(now + 0.3);
+      }
+      playGrab() {
+        this.init();
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        
+        const now = this.ctx.currentTime;
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(450, now);
+        osc.frequency.linearRampToValueAtTime(250, now + 0.08);
+        gain.gain.setValueAtTime(0.15, now);
+        gain.gain.linearRampToValueAtTime(0.01, now + 0.08);
+        
+        osc.start(now);
+        osc.stop(now + 0.08);
+      }
+    }
+    const synth = new WebAudioSynth();
+  </script>
+
+  <script>
+    const FOODS = [
+      { emoji: '🍎', name: 'apple', type: 'countable' },
+      { emoji: '🍪', name: 'biscuits', type: 'countable' },
+      { emoji: '🥚', name: 'egg', type: 'countable' },
+      { emoji: '🍅', name: 'tomato', type: 'countable' },
+      { emoji: '🍐', name: 'pear', type: 'countable' },
+      { emoji: '🥛', name: 'milk', type: 'uncountable' },
+      { emoji: '💧', name: 'water', type: 'uncountable' },
+      { emoji: '🧀', name: 'cheese', type: 'uncountable' },
+      { emoji: '🌾', name: 'flour', type: 'uncountable' },
+      { emoji: '🍚', name: 'rice', type: 'uncountable' }
+    ];
+
+    let score = 0;
+    let timeLeft = 60;
+    let gameRunning = false;
+    let controlMode = 'mouse'; // 'webcam' or 'mouse'
+    let timerInterval = null;
+    let handX = 0, handY = 0;
+    let isFist = false;
+    let grabbedFood = null;
+    let activeFoods = [];
+    let foodIdCounter = 0;
+    let spawnInterval = null;
+    let animFrame = null;
+
+    const handCursor = document.getElementById('hand-cursor');
+    const foodContainer = document.getElementById('food-container');
+    const popsContainer = document.getElementById('pops-container');
+    const cartLeft = document.getElementById('cart-left');
+    const cartRight = document.getElementById('cart-right');
+    const scoreDisplay = document.getElementById('score-display');
+    const timerDisplay = document.getElementById('timer-display');
+    const startOverlay = document.getElementById('start-overlay');
+    const endOverlay = document.getElementById('end-overlay');
+    const redFlash = document.getElementById('red-flash');
+    const videoEl = document.getElementById('video-feed');
+
+    let cameraInstance = null;
+    function setupHands() {
+      videoEl.style.display = 'block';
+      
+      const hands = new Hands({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${file}`
+      });
+      hands.setOptions({
+        maxNumHands: 1,
+        modelComplexity: 0,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+      });
+      hands.onResults(onHandResults);
+
+      cameraInstance = new Camera(videoEl, {
+        onFrame: async () => { 
+          if (controlMode === 'webcam' && gameRunning) {
+            await hands.send({ image: videoEl }); 
+          }
+        },
+        width: 320,
+        height: 240
+      });
+      cameraInstance.start().catch(err => {
+        console.warn("Webcam blocked or restricted. Activating Mouse mode fallback.", err);
+        controlMode = 'mouse';
+        videoEl.style.display = 'none';
+        setupMouseEvents();
+      });
+    }
+
+    function onHandResults(results) {
+      if (controlMode !== 'webcam' || !gameRunning) return;
+      
+      if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+        handCursor.style.display = 'none';
+        return;
+      }
+      
+      const landmarks = results.multiHandLandmarks[0];
+      const rawX = 1 - landmarks[9].x; // mirror coordinate
+      const rawY = landmarks[9].y;
+      
+      handX = rawX * window.innerWidth;
+      handY = rawY * window.innerHeight;
+
+      // Gesture check: grab state
+      const tips = [8, 12, 16, 20];
+      const pips = [6, 10, 14, 18];
+      let closedCount = 0;
+      for (let i = 0; i < tips.length; i++) {
+        if (landmarks[tips[i]].y > landmarks[pips[i]].y) closedCount++;
+      }
+      const nextFist = closedCount >= 3;
+      if (nextFist && !isFist) {
+        synth.playGrab();
+      }
+      isFist = nextFist;
+
+      handCursor.style.display = 'block';
+      handCursor.style.left = (handX - 20) + 'px';
+      handCursor.style.top = (handY - 20) + 'px';
+      handCursor.className = 'hand-cursor ' + (isFist ? 'hand-closed' : 'hand-open');
+    }
+
+    function setupMouseEvents() {
+      // Direct drag and drop support for items (extremely reliable inside Google Sites embeds!)
+      foodContainer.addEventListener('mousedown', onDragStart);
+      foodContainer.addEventListener('touchstart', onDragStart, { passive: false });
+
+      window.addEventListener('mousemove', onDragMove);
+      window.addEventListener('touchmove', onDragMove, { passive: false });
+
+      window.addEventListener('mouseup', onDragEnd);
+      window.addEventListener('touchend', onDragEnd);
+    }
+
+    let dragOffset = { x: 0, y: 0 };
+    
+    function onDragStart(e) {
+      if (!gameRunning) return;
+      const target = e.target.closest('.food-item');
+      if (!target) return;
+      
+      e.preventDefault();
+      const id = parseInt(target.id.replace('food-', ''));
+      const item = activeFoods.find(f => f.id === id);
+      if (!item || item.falling) return;
+
+      grabbedFood = item;
+      item.el.classList.add('grabbed');
+      synth.playGrab();
+
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      
+      dragOffset.x = clientX - item.x;
+      dragOffset.y = clientY - item.y;
+    }
+
+    function onDragMove(e) {
+      if (!grabbedFood || !gameRunning) return;
+      
+      e.preventDefault();
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+
+      grabbedFood.x = clientX - dragOffset.x;
+      grabbedFood.y = clientY - dragOffset.y;
+      
+      // Boundaries
+      grabbedFood.x = Math.max(0, Math.min(window.innerWidth - 80, grabbedFood.x));
+      grabbedFood.y = Math.max(0, Math.min(window.innerHeight - 80, grabbedFood.y));
+
+      grabbedFood.el.style.left = grabbedFood.x + 'px';
+      grabbedFood.el.style.top = grabbedFood.y + 'px';
+
+      // Highlight carts dynamically
+      const midX = grabbedFood.x + 40;
+      const midY = grabbedFood.y + 40;
+      
+      const lr = cartLeft.getBoundingClientRect();
+      const rr = cartRight.getBoundingClientRect();
+      
+      cartLeft.classList.toggle('highlight', midX > lr.left && midX < lr.right && midY > lr.top);
+      cartRight.classList.toggle('highlight', midX > rr.left && midX < rr.right && midY > rr.top);
+    }
+
+    function onDragEnd(e) {
+      if (!grabbedFood || !gameRunning) return;
+
+      const midX = grabbedFood.x + 40;
+      const midY = grabbedFood.y + 40;
+      
+      const lr = cartLeft.getBoundingClientRect();
+      const rr = cartRight.getBoundingClientRect();
+      let placed = false;
+
+      grabbedFood.el.classList.remove('grabbed');
+
+      if (midX > lr.left && midX < lr.right && midY > lr.top) {
+        placed = true;
+        if (grabbedFood.food.type === 'countable') {
+          addScore(10, midX, midY);
+          synth.playCorrect();
+        } else {
+          addScore(-5, midX, midY);
+          synth.playWrong();
+          flashRed();
+        }
+      } else if (midX > rr.left && midX < rr.right && midY > rr.top) {
+        placed = true;
+        if (grabbedFood.food.type === 'uncountable') {
+          addScore(10, midX, midY);
+          synth.playCorrect();
+        } else {
+          addScore(-5, midX, midY);
+          synth.playWrong();
+          flashRed();
+        }
+      }
+
+      if (placed) {
+        grabbedFood.el.remove();
+        activeFoods = activeFoods.filter(f => f.id !== grabbedFood.id);
+      } else {
+        // Return back to target floor line if released outside cart
+        grabbedFood.el.style.top = grabbedFood.targetY + 'px';
+        grabbedFood.y = grabbedFood.targetY;
+      }
+
+      cartLeft.classList.remove('highlight');
+      cartRight.classList.remove('highlight');
+      grabbedFood = null;
+    }
+
+    function spawnFood() {
+      if (!gameRunning) return;
+      if (activeFoods.length >= 6) return; // limit active foods count to keep layout clear
+
+      const food = FOODS[Math.floor(Math.random() * FOODS.length)];
+      const id = foodIdCounter++;
+      const x = 30 + Math.random() * (window.innerWidth - 130);
+      const el = document.createElement('div');
+      el.className = 'food-item bounce-in';
+      el.id = 'food-' + id;
+      el.innerHTML = `
+        <span style="display:block;text-align:center">${food.emoji}</span>
+        <span style="font-size:11px;display:block;text-align:center;background:rgba(255,255,255,0.9);border-radius:8px;padding:2px 6px;margin-top:-2px;border:1px solid #ddd">${food.name}</span>
+      `;
+      el.style.left = x + 'px';
+      el.style.top = '-80px';
+      foodContainer.appendChild(el);
+
+      const targetHeightLine = window.innerHeight * 0.4 + Math.random() * (window.innerHeight * 0.2);
+      const item = { id, el, x, y: -80, targetY: targetHeightLine, food, falling: true };
+      activeFoods.push(item);
+    }
+
+    function gameLoop() {
+      if (!gameRunning) return;
+      animFrame = requestAnimationFrame(gameLoop);
+
+      // Apply downward gravity for falling items
+      activeFoods.forEach(item => {
+        if (item.falling) {
+          item.y += 3;
+          if (item.y >= item.targetY) {
+            item.y = item.targetY;
+            item.falling = false;
+          }
+          item.el.style.top = item.y + 'px';
+        }
+      });
+    }
+
+    function addScore(points, x, y) {
+      score += points;
+      if (score < 0) score = 0;
+      scoreDisplay.textContent = score;
+
+      const pop = document.createElement('div');
+      pop.className = 'score-pop';
+      pop.style.left = x + 'px';
+      pop.style.top = y + 'px';
+      pop.style.color = points > 0 ? '#10b981' : '#ef4444';
+      pop.textContent = points > 0 ? `+${points}` : `${points}`;
+      popsContainer.appendChild(pop);
+      setTimeout(() => pop.remove(), 1000);
+    }
+
+    function flashRed() {
+      redFlash.style.display = 'block';
+      document.body.classList.add('shake');
+      setTimeout(() => {
+        redFlash.style.display = 'none';
+        document.body.classList.remove('shake');
+      }, 300);
+    }
+
+    function startGame(selectedMode) {
+      synth.init();
+      controlMode = selectedMode;
+      score = 0;
+      timeLeft = 60;
+      gameRunning = true;
+      activeFoods = [];
+      grabbedFood = null;
+      foodContainer.innerHTML = '';
+      scoreDisplay.textContent = '0';
+      timerDisplay.textContent = '60';
+      startOverlay.style.display = 'none';
+      endOverlay.style.display = 'none';
+
+      if (controlMode === 'mouse') {
+        videoEl.style.display = 'none';
+        setupMouseEvents();
+      }
+
+      timerInterval = setInterval(() => {
+        timeLeft--;
+        timerDisplay.textContent = timeLeft;
+        if (timeLeft <= 0) endGame();
+      }, 1000);
+
+      spawnInterval = setInterval(spawnFood, 1800);
+      spawnFood();
+      gameLoop();
+    }
+
+    function endGame() {
+      gameRunning = false;
+      clearInterval(timerInterval);
+      clearInterval(spawnInterval);
+      cancelAnimationFrame(animFrame);
+
+      document.getElementById('final-score').textContent = score;
+      const msg = document.getElementById('result-msg');
+      if (score >= 80) { 
+        msg.textContent = '🌟 Amazing! You\'re a grammar master!'; 
+        msg.style.color = '#10b981'; 
+      } else if (score >= 50) { 
+        msg.textContent = '👍 Great work! Well done!'; 
+        msg.style.color = '#3b82f6'; 
+      } else { 
+        msg.textContent = '💪 Good try! Play again to beat your score!'; 
+        msg.style.color = '#f59e0b'; 
+      }
+
+      endOverlay.style.display = 'flex';
+    }
+
+    // Click triggers
+    document.getElementById('start-mouse-btn').addEventListener('click', (e) => {
+      e.preventDefault();
+      startGame('mouse');
+    });
+
+    document.getElementById('start-webcam-btn').addEventListener('click', (e) => {
+      e.preventDefault();
+      setupHands();
+      startOverlay.querySelector('div').innerHTML = '<p class="text-md text-purple-600 font-bold animate-pulse">📷 Calibrating camera... Stand back!</p>';
+      setTimeout(() => {
+        startGame('webcam');
+      }, 2000);
+    });
+
+    document.getElementById('restart-btn').addEventListener('click', (e) => {
+      e.preventDefault();
+      startGame(controlMode);
+    });
+  </script>
+ </body>
+</html>
